@@ -5,10 +5,12 @@ package com.mongodb;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.logging.Level;
@@ -33,7 +35,9 @@ public class ReplicaSetStatus {
         _mongo = mongo;
         _all = Collections.synchronizedList( new ArrayList<Node>() );
         for ( ServerAddress addr : initial ){
-            _all.add( new Node( addr ) );
+            Node node = new Node( addr );
+			_all.add( node );
+			_nodeMap.put(addr, node);
         }
         _nextResolveTime = System.currentTimeMillis() + inetAddrCacheMS;
 
@@ -79,7 +83,10 @@ public class ReplicaSetStatus {
      */
     ServerAddress getASecondary(){
         _checkClosed();
-        Node best = null;
+        Node best = getPreferred();
+        if (best != null) {
+        	return best._addr;
+        }
         double badBeforeBest = 0;
 
         int start = _random.nextInt( _all.size() );
@@ -117,6 +124,24 @@ public class ReplicaSetStatus {
             return null;
         return best._addr;
     }
+    
+    /**
+     * Return a good node from the preferred list.
+     * @return
+     */
+    Node getPreferred() {
+    	if (!_preferred.isEmpty()) {
+            for ( int i=0; i<_preferred.size(); i++ ){
+                ServerAddress n = _preferred.get( i );
+                Node node = _nodeMap.get(n);
+                if (node != null && node.ok()) {
+                	return node;
+                }
+            }
+    	}
+    	return null;
+    }
+    
 
     class Node {
 
@@ -222,6 +247,10 @@ public class ReplicaSetStatus {
         public boolean secondary(){
             return _ok && _isSecondary;
         }
+        
+        public boolean ok() {
+        	return _ok;
+        }
 
         public String toString(){
             StringBuilder buf = new StringBuilder();
@@ -319,8 +348,11 @@ public class ReplicaSetStatus {
             // remove unused hosts
             Iterator<Node> it = _all.iterator();
             while (it.hasNext()) {
-                if (!seenNodes.contains(it.next()))
+                Node next = it.next();
+				if (!seenNodes.contains(next)) {
                     it.remove();
+                    _nodeMap.remove(next._addr);
+				}
             }
         }
     }
@@ -338,6 +370,7 @@ public class ReplicaSetStatus {
             try {
                 n = new Node( new ServerAddress( host ) );
                 _all.add( n );
+                _nodeMap.put(n._addr, n);
             }
             catch ( UnknownHostException un ){
                 _logger.log( Level.WARNING , "couldn't resolve host [" + host + "]" );
@@ -387,8 +420,24 @@ public class ReplicaSetStatus {
     public int getMaxBsonObjectSize() {
         return maxBsonObjectSize;
     }
+    
+    /**
+     * Add the given address to the preferred address list. This list is used when 
+     * a query is set to 'slaveOk'.   
+     * @param sa a preferred server address.
+     * @return
+     */
+    public boolean addPreferred(ServerAddress sa) {
+    	return _preferred.add(sa);
+    }
+    
+    public boolean removePreferred(ServerAddress sa) {
+    	return _preferred.remove(sa);
+    }
 
     final List<Node> _all;
+    final List<ServerAddress> _preferred = new ArrayList<ServerAddress>();
+    final Map<ServerAddress, Node> _nodeMap = new HashMap<ServerAddress, Node> ();
     Updater _updater;
     Mongo _mongo;
     String _setName = null; // null until init
@@ -397,6 +446,7 @@ public class ReplicaSetStatus {
 
     String _lastPrimarySignal;
     boolean _closed = false;
+    
 
     final Random _random = new Random();
     long _nextResolveTime;
